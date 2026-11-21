@@ -1,0 +1,9 @@
+<Project>
+  <!-- Réglages communs. Avec un SDK plus ancien, remplace net10.0 par net8.0. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+</Project>

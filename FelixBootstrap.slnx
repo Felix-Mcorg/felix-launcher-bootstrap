@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/Felix.Bootstrap/Felix.Bootstrap.csproj" />
+  <Project Path="tests/Felix.Bootstrap.Tests/Felix.Bootstrap.Tests.csproj" />
+</Solution>
