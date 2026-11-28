@@ -1,0 +1,139 @@
+name: Publier le démarreur
+
+# Une nouvelle version est publiée AUTOMATIQUEMENT à chaque envoi sur la branche main.
+# Son numéro = contenu du fichier VERSION (ex. « 1.0 ») + numéro d'exécution : 1.0.1, 1.0.2...
+# Pour passer à 1.1.x ou 2.0.x, change simplement le contenu du fichier VERSION.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths-ignore:
+      - "**.md"
+      - "LISEZMOI.txt"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Numéro de version (ex. 1.2.0). Vide = numéro automatique."
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: ver
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            v="$INPUT_VERSION"
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            v="${GITHUB_REF_NAME}"
+          else
+            base="$(tr -d '[:space:]' < VERSION)"
+            v="${base}.${GITHUB_RUN_NUMBER}"
+          fi
+          v="${v#v}"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Version : $v"
+
+  test:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - run: dotnet test
+
+  # Native AOT se compile sur le système visé : un runner par plateforme.
+  build:
+    needs: [version, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { rid: win-x64, os: windows-latest, required: true }
+          - { rid: linux-x64, os: ubuntu-latest, required: false }
+          - { rid: osx-arm64, os: macos-latest, required: false }
+          - { rid: osx-x64, os: macos-latest, required: false }
+    runs-on: ${{ matrix.os }}
+    # Windows est obligatoire. Si Linux ou macOS échoue, la publication continue sans eux
+    # (regarde alors l'onglet Actions : la ligne en échec te dit pourquoi).
+    continue-on-error: ${{ !matrix.required }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Outils de compilation Linux (Native AOT)
+        if: startsWith(matrix.rid, 'linux')
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+      - name: Compiler
+        shell: bash
+        run: >
+          dotnet publish src/Felix.Bootstrap/Felix.Bootstrap.csproj -c Release
+          -r ${{ matrix.rid }}
+          -p:Version=${{ needs.version.outputs.version }}
+          -o publish
+
+      - name: Signature locale (obligatoire sur les Mac Apple Silicon)
+        if: startsWith(matrix.rid, 'osx')
+        run: codesign --force --sign - publish/FelixBootstrap || true
+
+      - name: Préparer le fichier à télécharger
+        shell: bash
+        run: |
+          mkdir -p dist
+          rid="${{ matrix.rid }}"
+          if [ "$rid" = "win-x64" ]; then
+            cp publish/FelixBootstrap.exe dist/FelixLauncher-Setup.exe
+          else
+            chmod +x publish/FelixBootstrap
+            cp publish/FelixBootstrap dist/FelixLauncher-Setup
+            (cd dist && zip -q "FelixLauncher-Setup-$rid.zip" FelixLauncher-Setup && rm FelixLauncher-Setup)
+          fi
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-${{ matrix.rid }}
+          path: dist/*
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bootstrap-*
+          merge-multiple: true
+          path: dist
+
+      - run: ls -la dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: Démarreur ${{ needs.version.outputs.version }}
+          body: |
+            Démarreur ${{ needs.version.outputs.version }}, publié automatiquement.
+            - Windows : FelixLauncher-Setup.exe
+            - Linux : FelixLauncher-Setup-linux-x64.zip
+            - macOS : FelixLauncher-Setup-osx-arm64.zip (Apple Silicon) ou -osx-x64.zip (Intel)
+          files: dist/*
